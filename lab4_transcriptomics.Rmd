@@ -6,3 +6,135 @@ output: html_document
 ---
 
 
+QUESTION 1
+```{r}
+#e.g.1 get the path 
+fq_path <- systemPipeRdata::pathList()$fastqdir
+
+#e.g.2 list the files 
+
+fq_files <- list.files(fq_path)
+
+print(fq_files)
+meta_data <- read.table(
+  "/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt", 
+  header = TRUE)
+head(meta_data)
+
+#RENAMING THE FILE 
+library(biomaRt)
+library(DT)
+
+# Step 1: Get fastq path and file list (optional, for context)
+fq_path <- systemPipeRdata::pathList()$fastqdir
+fq_files <- list.files(fq_path)
+print(fq_files)
+
+# Step 2: Read the original metadata file (unaltered)
+file_path <- "/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt"
+meta_data <- read.table(file_path, header = TRUE, stringsAsFactors = FALSE)
+head(meta_data)
+
+# Step 3: Simulate replacements IN MEMORY (no file is overwritten!)
+file_content <- readLines(file_path)
+
+# Replace *_1.fastq.gz → .fna path (just for display)
+file_content_modified <- gsub(
+  pattern = "\\./data/SRR446[0-9]+_1\\.fastq\\.gz",
+  replacement = "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/GCF_000001735.4_TAIR10.1_genomic.fna",
+  x = file_content
+)
+
+# Replace *_2.fastq.gz → .gtf path (just for display)
+file_content_modified <- gsub(
+  pattern = "\\./data/SRR446[0-9]+_2\\.fastq\\.gz",
+  replacement = "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/GCF_000001735.4_TAIR10.1_genomic.gtf",
+  x = file_content_modified
+)
+
+# Convert modified content into a data frame (skip comments if needed)
+meta_data_modified <- read.table(
+  text = file_content_modified, 
+  header = TRUE, 
+  stringsAsFactors = FALSE
+)
+
+#CREATING THE DATA TABE
+datatable(meta_data_modified)
+
+```
+QUESTION 2
+```{r}
+library(Rqc)
+fastq_files <- unique(c(meta_data$FileName1, meta_data$FileName2))
+qcRes <- rqc(path=fq_path, pattern = ".fastq.gz")
+rqcCycleQualityBoxPlot(qcRes)
+rqcReadFrequencyPlot(qcRes)
+
+
+rqcCycleQualityBoxPlot(qcRes[0:12])
+rqcCycleQualityBoxPlot(qcRes[13:24])
+rqcCycleQualityBoxPlot(qcRes[25:36])
+
+rqcReadFrequencyPlot(qcRes[0:12])
+rqcReadFrequencyPlot(qcRes[13:24])
+rqcReadFrequencyPlot(qcRes[25:36])
+
+```
+
+QUESTION 3
+```{r}
+#QUESTION 3
+library(ShortRead)
+targets_data <- read.table(
+  "/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt",
+  header = TRUE,stringsAsFactors = FALSE)
+fastq_dir <- "/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/fastq"
+targets_data$FileName1 <- file.path(fastq_dir, basename(targets_data$FileName1))
+targets_data$FileName2 <- file.path(fastq_dir, basename(targets_data$FileName2))
+output_dir <- "processed_reads"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+adapter_seq <- "GCCCGGGTAA"
+
+process_read_file <- function(input_path, sample_name) {
+  output_file <- file.path(output_dir, paste0(sample_name, "_processed.fastq.gz"))
+  fq <- readFastq(input_path)
+  trimmed_seq <- trimLRPatterns(Lpattern = adapter_seq, subject = sread(fq), max.Lmismatch = 0)
+  keep_idx <- width(trimmed_seq) > 0
+  fq <- fq[keep_idx]
+  trimmed_seq <- trimmed_seq[keep_idx]
+  trimmed_seq <- narrow(trimmed_seq, end = width(trimmed_seq) - 3)
+  trimmed_qual <- narrow(quality(fq), end = width(trimmed_seq))  # Note: use trimmed_seq widths here to sync lengths
+  fq <- ShortReadQ(sread = trimmed_seq, quality = trimmed_qual, id = ShortRead::id(fq)[keep_idx])
+  if(length(fq) == 0) {
+    writeFastq(fq, output_file, compress = TRUE)
+    return(output_file)
+  }
+  afreq <- alphabetFrequency(sread(fq), baseOnly = TRUE)
+  if(!"N" %in% colnames(afreq)) {
+    keep_noN <- rep(TRUE, length(fq))
+  } else {
+    keep_noN <- afreq[, "N"] <= 1
+  }
+  fq <- fq[keep_noN]
+  
+  writeFastq(fq, output_file, compress = TRUE)
+  return(output_file)
+}
+
+processed_files <- mapply(
+  FUN = process_read_file,
+  input_path = targets_data$FileName1,
+  sample_name = targets_data$SampleName,
+  SIMPLIFY = TRUE
+)
+
+targets_data$ProcessedFile1 <- processed_files
+
+DT::datatable(targets_data)
+```
+QUESTION 4
+```{bash}
+ for fq in /Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/processed_reads/*_processed.fastq; do   base=$(basename "$fq" | sed 's/_processed.fastq//');   hisat2 -x /Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/hisat2_index/tair10_1_index     -U "$fq"     -p 8     -S sam_files/"$base".sam; done
+```
+
