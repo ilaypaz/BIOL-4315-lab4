@@ -84,7 +84,8 @@ rqcReadFrequencyPlot(qcRes[25:36])
 
 QUESTION 3
 ```{r}
-#QUESTION 3
+file.exists("processed_reads/M1A_processed.fastq.gz")
+file.remove("processed_reads/M1A_processed.fastq.gz")
 library(ShortRead)
 targets_data <- read.table(
   "/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt",
@@ -104,12 +105,15 @@ process_read_file <- function(input_path, sample_name) {
   fq <- fq[keep_idx]
   trimmed_seq <- trimmed_seq[keep_idx]
   trimmed_seq <- narrow(trimmed_seq, end = width(trimmed_seq) - 3)
-  trimmed_qual <- narrow(quality(fq), end = width(trimmed_seq))  # Note: use trimmed_seq widths here to sync lengths
+  trimmed_qual <- narrow(quality(fq), end = width(trimmed_seq))
   fq <- ShortReadQ(sread = trimmed_seq, quality = trimmed_qual, id = ShortRead::id(fq)[keep_idx])
+  
   if(length(fq) == 0) {
-    writeFastq(fq, output_file, compress = TRUE)
+    if(file.exists(output_file)) file.remove(output_file)
+    writeFastq(fq, output_file, compress = TRUE, mode="w")
     return(output_file)
   }
+  
   afreq <- alphabetFrequency(sread(fq), baseOnly = TRUE)
   if(!"N" %in% colnames(afreq)) {
     keep_noN <- rep(TRUE, length(fq))
@@ -118,20 +122,23 @@ process_read_file <- function(input_path, sample_name) {
   }
   fq <- fq[keep_noN]
   
-  writeFastq(fq, output_file, compress = TRUE)
+  if(file.exists(output_file)) file.remove(output_file)   # <-- add this line to avoid error
+  writeFastq(fq, output_file, compress = TRUE, mode="w")
   return(output_file)
 }
 
-processed_files <- mapply(
+
+processed_reads <- mapply(
   FUN = process_read_file,
   input_path = targets_data$FileName1,
   sample_name = targets_data$SampleName,
   SIMPLIFY = TRUE
 )
 
-targets_data$ProcessedFile1 <- processed_files
+targets_data$ProcessedFile1 <- processed_reads
 
 DT::datatable(targets_data)
+
 ```
 QUESTION 4
 Convert fastq into SAM 
@@ -209,5 +216,66 @@ ggplot(align_df, aes(x = "", y = percent_aligned)) +
   geom_boxplot(fill = "red") +
   labs(title =  "HISAT2 Alignment Percentages",
        y = "Alignment Percent (%)",x = "") 
+```
+
+QUESTION 6
+```{r}
+count_table <- gene_count_list$count
+
+colnames(count_table) <- gsub("_sorted\\.bam$", "", colnames(count_table))
+
+
+count_table <- count_table[rowSums(count_table[ , -1]) > 0, ]
+
+datatable(count_table, 
+              options = list(pageLength = 10), 
+              caption = "Filtered Count Table")
+
+```
+
+QUESTION 7 
+```{r}
+comp <- systemPipeR::readComp("/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt")
+pairs<-comp[[1]]
+p
+results_list <- list()
+for (pair in pairs) {
+  groups <- unlist(strsplit(pair, "-"))
+  g1 <- groups[1]
+  g2 <- groups[2]
+  comp_name <- paste(g1, "vs", g2)
+  res <- DESeq2::results(dds2_results, contrast = c("Factor", g1, g2), alpha = 0.2)
+  filtered_summary <- filter_and_count(res, comp_name)
+  results_list[[comp_name]] <- filtered_summary
+}
+
+pairwise_summary <- do.call(rbind, results_list)
+
+plot_data <- pairwise_summary %>%
+  pivot_longer(cols = c(Up_regulated, Down_regulated),
+               names_to = "Regulation",
+               values_to = "Count") %>%
+  mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+
+p2 <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +
+  labs(
+    title = "Differentially Expressed Genes by Sample Comparison",
+    subtitle = "Using dds2 (Factor-level), FC ≥ 2, alpha = 0.2",
+    x = "Comparison",
+    y = "Number of DE Genes",
+    fill = "Regulation"
+  ) +
+  theme_minimal()
+theme(
+  plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+  plot.subtitle = element_text(hjust = 0.5, size = 12),
+  axis.text = element_text(size = 10),
+  axis.title = element_text(size = 12),
+  legend.title = element_text(size = 11),
+  legend.text = element_text(size = 10))
+
+p2
 ```
 

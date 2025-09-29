@@ -1,6 +1,9 @@
 BiocManager::install("clusterProfiler")
 BiocManager::install("EnhancedVolcano")
 BiocManager::install("biomaRt", force = TRUE)
+BiocManager::install("clusterProfiler", force=TRUE)
+BiocManager::install("ShortRead", force = TRUE)
+BiocManager::install("Rsubread",force=TRUE)
 #Note, if biomaRt isn't installed on your machine for some reason, you should install it as well. 
 
 lapply(c(
@@ -66,6 +69,9 @@ rqcReadFrequencyPlot(qcRes[0:12])
 rqcReadFrequencyPlot(qcRes[13:24])
 rqcReadFrequencyPlot(qcRes[25:36])
 
+
+file.exists("processed_reads/M1A_processed.fastq.gz")
+file.remove("processed_reads/M1A_processed.fastq.gz")
 #QUESTION 3
 library(ShortRead)
 targets_data <- read.table(
@@ -86,32 +92,37 @@ process_read_file <- function(input_path, sample_name) {
   fq <- fq[keep_idx]
   trimmed_seq <- trimmed_seq[keep_idx]
   trimmed_seq <- narrow(trimmed_seq, end = width(trimmed_seq) - 3)
-  trimmed_qual <- narrow(quality(fq), end = width(trimmed_seq))  # Note: use trimmed_seq widths here to sync lengths
+  trimmed_qual <- narrow(quality(fq), end = width(trimmed_seq))
   fq <- ShortReadQ(sread = trimmed_seq, quality = trimmed_qual, id = ShortRead::id(fq)[keep_idx])
-if(length(fq) == 0) {
-  writeFastq(fq, output_file, compress = TRUE)
+  
+  if(length(fq) == 0) {
+    if(file.exists(output_file)) file.remove(output_file)
+    writeFastq(fq, output_file, compress = TRUE, mode="w")
+    return(output_file)
+  }
+  
+  afreq <- alphabetFrequency(sread(fq), baseOnly = TRUE)
+  if(!"N" %in% colnames(afreq)) {
+    keep_noN <- rep(TRUE, length(fq))
+  } else {
+    keep_noN <- afreq[, "N"] <= 1
+  }
+  fq <- fq[keep_noN]
+  
+  if(file.exists(output_file)) file.remove(output_file)   # <-- add this line to avoid error
+  writeFastq(fq, output_file, compress = TRUE, mode="w")
   return(output_file)
 }
-afreq <- alphabetFrequency(sread(fq), baseOnly = TRUE)
-if(!"N" %in% colnames(afreq)) {
-  keep_noN <- rep(TRUE, length(fq))
-} else {
-  keep_noN <- afreq[, "N"] <= 1
-}
-fq <- fq[keep_noN]
 
-  writeFastq(fq, output_file, compress = TRUE)
-  return(output_file)
-}
 
-processed_files <- mapply(
+processed_reads <- mapply(
   FUN = process_read_file,
   input_path = targets_data$FileName1,
   sample_name = targets_data$SampleName,
   SIMPLIFY = TRUE
 )
 
-targets_data$ProcessedFile1 <- processed_files
+targets_data$ProcessedFile1 <- processed_reads
 
 DT::datatable(targets_data)
 
@@ -193,7 +204,7 @@ align_df <- align_df %>%
   )
 
 head(align_df)
-
+#question 4
 library(dplyr)
 library(stringr)
 library(DT)
@@ -229,7 +240,6 @@ ggplot(align_df, aes(x = "", y = percent_aligned)) +
   labs(title =  "HISAT2 Alignment Percentages",
        y = "Alignment Percent (%)",x = "") 
 ##post question 5 pain 
-BiocManager::install("Rsubread")
 library(Rsubread)
 
 # Define the full path to your bam files directory
@@ -239,7 +249,7 @@ bam_dir <- "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/bam_f
 bfiles <- list.files(bam_dir, pattern = "_sorted.bam$", full.names = TRUE)
 
 # Define path to annotation GTF file (update path as necessary)
-gtf_file <- "/path/to/GCF_000001735.4_TAIR10.1_genomic.gtf"
+gtf_file <- "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/GCF_000001735.4_TAIR10.1_genomic.gtf"
 
 # Run featureCounts
 gene_count_list <- featureCounts(
@@ -257,11 +267,186 @@ gene_count_list <- featureCounts(
 # View summary of counts
 head(gene_count_list$counts)
 
+#list bam files
+bfiles <- list.files("./bam_files", pattern = "_sorted.bam$", full.names = TRUE)
+
+#Counting how many reads corespond to each gene
+gene_count_list <- Rsubread::featureCounts(files = bfiles, annot.ext = "GCF_000001735.4_TAIR10.1_genomic.gtf", 
+                                           isGTFAnnotationFile = TRUE, # <--- input annotation is GTF
+                                           allowMultiOverlap = FALSE,  # <--- don't allow reads that overlap with multiple loci
+                                           isPairedEnd = FALSE, nthreads = 8,
+                                           minMQS = 10, # <--- minimum mapping quality score of 10 (like a phred score for the hisat2 alignment)
+                                           GTF.featureType = "exon",  # <--- Count reads overlapping 'exon' features
+                                           GTF.attrType = "gene_id" # <--- Groups exon by gene id
+)
+library(tibble)
+tibble::glimpse(gene_count_list$annotation)[1:5,]
 
 
+count_table <- gene_count_list$count
+
+colnames(count_table) <- gsub("_sorted\\.bam$", "", colnames(count_table))
 
 
+count_table <- count_table[rowSums(count_table[ , -1]) > 0, ]
+
+datatable(count_table, 
+              options = list(pageLength = 10), 
+              caption = "Filtered Count Table")
 
 
+#Get the metadata table that would accompany the count table
+coldata <- meta_data %>% dplyr::select(SampleName,SampleLong,Factor) %>% 
+  dplyr::mutate(SampleLong=str_split_i(SampleLong, "\\.",1)) %>% #getting the groups name (Avirulent, Mock and Virulent)
+  dplyr::rename(condition = SampleLong) %>%
+  dplyr::mutate(condition = factor(condition)) %>% #for group comp
+  dplyr::mutate(Factor = factor(Factor)) #for sample comp
+
+base::rownames(coldata) <- coldata$SampleName
+coldata <- coldata %>% mutate(SampleName = factor(SampleName))
+
+coldata$type <- factor(rep("single-read", nrow(coldata)))
+
+#Make sure samples are in the same order between the two. 
+coldata <- coldata[base::match(base::colnames(count_table), rownames(coldata)),]
+
+#Check that they are indeed same order
+all(rownames(coldata) == base::colnames(count_table))
+
+#creating a dds object where the conditions are avr vs mock vs vir
+
+dds1 <- DESeqDataSetFromMatrix(countData = count_table,
+                               colData = coldata,
+                               design = ~ condition)
+print(dds1)
+#creating a dds object where the conditions are the samples themslevs 
+dds2 <- DESeqDataSetFromMatrix(countData = count_table,
+                               colData = coldata,
+                               design = ~ Factor)
+print(dds2)
+
+#correlating the samples
+d <- cor(assay(rlog(dds1)), method = "spearman")
+#turning correlation to a distance (1 - correlation) and clustring
+hc <- hclust(dist(1 - d))
+
+#hirarchal clustering
+plot.phylo(as.phylo(hc), type = "p", edge.col = "blue", edge.width = 2,
+           show.node.label = TRUE, no.margin = TRUE)
+dds1_results <- DESeq(dds1)
+dds2_results <- DESeq(dds2)
+res1 <- DESeq2::results(dds1_results)
+res1
+res2 <- DESeq2::results(dds2_results)
+res2
+dds2
+res_vir_mock <- DESeq2::results(dds1_results, contrast = c("condition", "Vir", "Mock"), alpha = 0.2)
+
+# Avr vs Mock  
+res_avr_mock <- DESeq2::results(dds1_results, contrast = c("condition", "Avr", "Mock"), alpha = 0.2)
+
+# Vir vs Avr
+res_vir_avr <- DESeq2::results(dds1_results, contrast = c("condition", "Vir", "Avr"), alpha = 0.2)
+
+# Function to filter and count DE genes
+filter_and_count <- function(res_obj, comparison_name, fc_threshold = 2) {
+  # Remove NAs
+  res_filtered <- res_obj[!is.na(res_obj$padj) & !is.na(res_obj$log2FoldChange), ]
+  
+  # Apply filters: |log2FC| >= log2(2) = 1 and padj <= alpha (already set in results())
+  sig_genes <- res_filtered[abs(res_filtered$log2FoldChange) >= log2(fc_threshold), ]
+  
+  # Count up and down regulated
+  up_regulated <- sum(sig_genes$log2FoldChange > 0)
+  down_regulated <- sum(sig_genes$log2FoldChange < 0)
+  
+  return(data.frame(
+    Comparison = comparison_name,
+    Up_regulated = up_regulated,
+    Down_regulated = down_regulated
+  ))
+}
+
+# Apply filtering and counting to all comparisons
+results_summary <- rbind(
+  filter_and_count(res_vir_mock, "Vir vs Mock"),
+  filter_and_count(res_avr_mock, "Avr vs Mock"),
+  filter_and_count(res_vir_avr, "Vir vs Avr")
+)
+
+# Print summary
+print("Summary of DE genes (FC >= 2, alpha = 0.2):")
+
+print(results_summary)
+
+plot_data <- results_summary %>%
+  pivot_longer(cols = c(Up_regulated, Down_regulated), 
+               names_to = "Regulation", 
+               values_to = "Count") %>%
+  mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+
+# Create horizontal stacked bar plot
+p <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    title = "Differentially Expressed Genes by Comparison",
+    subtitle = "Fold Change >= 2, alpha = 0.2",
+    x = "Comparison",
+    y = "Number of Genes",
+    fill = "Regulation"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10))
+
+#QUESTION 7 
+comp <- systemPipeR::readComp("/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt")
+pairs<-comp[[1]]
+p
+results_list <- list()
+for (pair in pairs) {
+  groups <- unlist(strsplit(pair, "-"))
+  g1 <- groups[1]
+  g2 <- groups[2]
+  comp_name <- paste(g1, "vs", g2)
+  res <- DESeq2::results(dds2_results, contrast = c("Factor", g1, g2), alpha = 0.2)
+  filtered_summary <- filter_and_count(res, comp_name)
+  results_list[[comp_name]] <- filtered_summary
+}
+
+pairwise_summary <- do.call(rbind, results_list)
+
+plot_data <- pairwise_summary %>%
+  pivot_longer(cols = c(Up_regulated, Down_regulated),
+               names_to = "Regulation",
+               values_to = "Count") %>%
+  mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+
+p2 <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +
+  labs(
+    title = "Differentially Expressed Genes by Sample Comparison",
+    subtitle = "Using dds2 (Factor-level), FC ≥ 2, alpha = 0.2",
+    x = "Comparison",
+    y = "Number of DE Genes",
+    fill = "Regulation"
+  ) +
+  theme_minimal()
+theme(
+  plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+  plot.subtitle = element_text(hjust = 0.5, size = 12),
+  axis.text = element_text(size = 10),
+  axis.title = element_text(size = 12),
+  legend.title = element_text(size = 11),
+  legend.text = element_text(size = 10))
+
+p2
 
 
