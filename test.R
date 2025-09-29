@@ -410,7 +410,7 @@ p <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
 #QUESTION 7 
 comp <- systemPipeR::readComp("/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt")
 pairs<-comp[[1]]
-p
+pairs
 results_list <- list()
 for (pair in pairs) {
   groups <- unlist(strsplit(pair, "-"))

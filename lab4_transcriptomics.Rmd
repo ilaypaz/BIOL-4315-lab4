@@ -75,7 +75,9 @@ rqcReadFrequencyPlot(qcRes)
 rqcCycleQualityBoxPlot(qcRes[0:12])
 rqcCycleQualityBoxPlot(qcRes[13:24])
 rqcCycleQualityBoxPlot(qcRes[25:36])
-
+rqcCycleBaseCallsPlot(qcRes[0:12]) + theme_bw()
+rqcCycleBaseCallsPlot(qcRes[13:24]) + theme_bw()
+rqcCycleBaseCallsPlot(qcRes[25:36]) + theme_bw()
 rqcReadFrequencyPlot(qcRes[0:12])
 rqcReadFrequencyPlot(qcRes[13:24])
 rqcReadFrequencyPlot(qcRes[25:36])
@@ -220,6 +222,47 @@ ggplot(align_df, aes(x = "", y = percent_aligned)) +
 
 QUESTION 6
 ```{r}
+library(Rsubread)
+
+# Define the full path to your bam files directory
+bam_dir <- "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/bam_files"
+
+# List all sorted BAM files with full path
+bfiles <- list.files(bam_dir, pattern = "_sorted.bam$", full.names = TRUE)
+
+# Define path to annotation GTF file (update path as necessary)
+gtf_file <- "/Users/ipaz00/Downloads/BIOL4315_R/biol4315lab4/BIOL-4315-lab4/GCF_000001735.4_TAIR10.1_genomic.gtf"
+
+# Run featureCounts
+gene_count_list <- featureCounts(
+  files = bfiles,
+  annot.ext = gtf_file,
+  isGTFAnnotationFile = TRUE,
+  allowMultiOverlap = FALSE,
+  isPairedEnd = FALSE,
+  nthreads = 8,
+  minMQS = 10,
+  GTF.featureType = "exon",
+  GTF.attrType = "gene_id"
+)
+
+# View summary of counts
+head(gene_count_list$counts)
+
+#list bam files
+bfiles <- list.files("./bam_files", pattern = "_sorted.bam$", full.names = TRUE)
+
+#Counting how many reads corespond to each gene
+gene_count_list <- Rsubread::featureCounts(files = bfiles, annot.ext = "GCF_000001735.4_TAIR10.1_genomic.gtf", 
+                                           isGTFAnnotationFile = TRUE, # <--- input annotation is GTF
+                                           allowMultiOverlap = FALSE,  # <--- don't allow reads that overlap with multiple loci
+                                           isPairedEnd = FALSE, nthreads = 8,
+                                           minMQS = 10, # <--- minimum mapping quality score of 10 (like a phred score for the hisat2 alignment)
+                                           GTF.featureType = "exon",  # <--- Count reads overlapping 'exon' features
+                                           GTF.attrType = "gene_id" # <--- Groups exon by gene id
+)
+library(tibble)
+tibble::glimpse(gene_count_list$annotation)[1:5,]
 count_table <- gene_count_list$count
 
 colnames(count_table) <- gsub("_sorted\\.bam$", "", colnames(count_table))
@@ -235,9 +278,131 @@ datatable(count_table,
 
 QUESTION 7 
 ```{r}
+library(ape)
+library(DESeq2)
+library(tidyr)
+count_table <- gene_count_list$count
+
+colnames(count_table) <- gsub("_sorted\\.bam$", "", colnames(count_table))
+
+
+count_table <- count_table[rowSums(count_table[ , -1]) > 0, ]
+
+
+
+#Get the metadata table that would accompany the count table
+coldata <- meta_data %>% dplyr::select(SampleName,SampleLong,Factor) %>% 
+  dplyr::mutate(SampleLong=str_split_i(SampleLong, "\\.",1)) %>% #getting the groups name (Avirulent, Mock and Virulent)
+  dplyr::rename(condition = SampleLong) %>%
+  dplyr::mutate(condition = factor(condition)) %>% #for group comp
+  dplyr::mutate(Factor = factor(Factor)) #for sample comp
+
+base::rownames(coldata) <- coldata$SampleName
+coldata <- coldata %>% mutate(SampleName = factor(SampleName))
+
+coldata$type <- factor(rep("single-read", nrow(coldata)))
+
+#Make sure samples are in the same order between the two. 
+coldata <- coldata[base::match(base::colnames(count_table), rownames(coldata)),]
+
+#Check that they are indeed same order
+all(rownames(coldata) == base::colnames(count_table))
+
+#creating a dds object where the conditions are avr vs mock vs vir
+
+dds1 <- DESeqDataSetFromMatrix(countData = count_table,
+                               colData = coldata,
+                               design = ~ condition)
+print(dds1)
+#creating a dds object where the conditions are the samples themslevs 
+dds2 <- DESeqDataSetFromMatrix(countData = count_table,
+                               colData = coldata,
+                               design = ~ Factor)
+print(dds2)
+
+#correlating the samples
+d <- cor(assay(rlog(dds1)), method = "spearman")
+#turning correlation to a distance (1 - correlation) and clustring
+hc <- hclust(dist(1 - d))
+
+#hirarchal clustering
+plot.phylo(as.phylo(hc), type = "p", edge.col = "blue", edge.width = 2,
+           show.node.label = TRUE, no.margin = TRUE)
+dds1_results <- DESeq(dds1)
+dds2_results <- DESeq(dds2)
+res1 <- DESeq2::results(dds1_results)
+res1
+res2 <- DESeq2::results(dds2_results)
+res2
+dds2
+res_vir_mock <- DESeq2::results(dds1_results, contrast = c("condition", "Vir", "Mock"), alpha = 0.2)
+
+# Avr vs Mock  
+res_avr_mock <- DESeq2::results(dds1_results, contrast = c("condition", "Avr", "Mock"), alpha = 0.2)
+
+# Vir vs Avr
+res_vir_avr <- DESeq2::results(dds1_results, contrast = c("condition", "Vir", "Avr"), alpha = 0.2)
+
+# Function to filter and count DE genes
+filter_and_count <- function(res_obj, comparison_name, fc_threshold = 2) {
+  # Remove NAs
+  res_filtered <- res_obj[!is.na(res_obj$padj) & !is.na(res_obj$log2FoldChange), ]
+  
+  # Apply filters: |log2FC| >= log2(2) = 1 and padj <= alpha (already set in results())
+  sig_genes <- res_filtered[abs(res_filtered$log2FoldChange) >= log2(fc_threshold), ]
+  
+  # Count up and down regulated
+  up_regulated <- sum(sig_genes$log2FoldChange > 0)
+  down_regulated <- sum(sig_genes$log2FoldChange < 0)
+  
+  return(data.frame(
+    Comparison = comparison_name,
+    Up_regulated = up_regulated,
+    Down_regulated = down_regulated
+  ))
+}
+
+# Apply filtering and counting to all comparisons
+results_summary <- rbind(
+  filter_and_count(res_vir_mock, "Vir vs Mock"),
+  filter_and_count(res_avr_mock, "Avr vs Mock"),
+  filter_and_count(res_vir_avr, "Vir vs Avr")
+)
+
+# Print summary
+print("Summary of DE genes (FC >= 2, alpha = 0.2):")
+
+print(results_summary)
+
+plot_data <- results_summary %>%
+  pivot_longer(cols = c(Up_regulated, Down_regulated), 
+               names_to = "Regulation", 
+               values_to = "Count") %>%
+  mutate(Regulation = factor(Regulation, levels = c("Up_regulated", "Down_regulated")))
+
+# Create horizontal stacked bar plot
+p <- ggplot(plot_data, aes(x = Comparison, y = Count, fill = Regulation)) +
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +  # Makes it horizontal
+  labs(
+    title = "Differentially Expressed Genes by Comparison",
+    subtitle = "Fold Change >= 2, alpha = 0.2",
+    x = "Comparison",
+    y = "Number of Genes",
+    fill = "Regulation"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10))
+
 comp <- systemPipeR::readComp("/Users/ipaz00/Library/R/arm64/4.4/library/systemPipeRdata/extdata/param/targetsPE.txt")
 pairs<-comp[[1]]
-p
+pairs
 results_list <- list()
 for (pair in pairs) {
   groups <- unlist(strsplit(pair, "-"))
@@ -279,3 +444,7 @@ theme(
 p2
 ```
 
+
+QUESTION 8 
+
+The clustering patterns differ between the Spear man correlation analysis and the heat map due to the use of different statistical methods. Spearman correlation calculates the rank-based correlation between genes or samples, which is then converted into a distance matrix and used for hierarchical clustering. In contrast, the heat map is generated using normalized expression values that are log-transformed and then scaled using row-wise Z-scores. This standardization highlights upregulation or downregulation of genes within each treatment group. Because Spearman correlation focuses on rank-order relationships, while the heatmap emphasizes patterns in expression magnitude after normalization and scaling, the resulting clustering patterns are different from each other.
