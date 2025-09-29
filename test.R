@@ -449,4 +449,133 @@ theme(
 
 p2
 
+m <- biomaRt::useMart("plants_mart", dataset = "athaliana_eg_gene",
+                      host = "https://plants.ensembl.org")
+desc <- biomaRt::getBM(attributes = c("tair_locus", "description"), mart = m)
+desc <- desc[!duplicated(desc[, 1]), ]
+desc <- desc %>% rename( gene_id = tair_locus)
+
+library(stringr)
+
+annotate_results <- function(res_obj, desc_df) {
+  res_df <- as.data.frame(res_obj)
+  res_df$gene_id <- rownames(res_df)
+  res_df <- left_join(res_df, desc_df, by = "gene_id") %>%
+    mutate(description = str_replace(description, "\\[.*", "")) # removes everything from [ onward
+  
+  return(res_df)
+}
+
+# Add annotations to all results
+res_vir_mock_annot <- annotate_results(res_vir_mock, desc)
+res_avr_mock_annot <- annotate_results(res_avr_mock, desc)
+res_vir_avr_annot <- annotate_results(res_vir_avr, desc)
+
+res_vir_mock_annot$description[is.na(res_vir_mock_annot$description)] <- ""
+res_vir_mock_annot <- res_vir_mock_annot %>% 
+  filter(!is.na(pvalue) & !is.na(log2FoldChange))
+library(dplyr)
+
+# Replace NA in description with empty string
+res_vir_mock_annot$description[is.na(res_vir_mock_annot$description)] <- ""
+
+# Filter out NA in pvalue and log2FoldChange
+res_vir_mock_annot <- res_vir_mock_annot %>%
+  filter(!is.na(pvalue) & !is.na(log2FoldChange))
+
+# Create short_label with first 25 characters of description
+res_vir_mock_annot <- res_vir_mock_annot %>%
+  mutate(short_label = substr(description, 1, 25)) %>%
+  mutate(label = ifelse(abs(log2FoldChange) > 1 & pvalue < 0.05, short_label, ""))
+
+# Plot with boxedLabels = FALSE to start, to avoid viewport errors
+volcano1 <- EnhancedVolcano(res_vir_mock_annot,
+                            lab = res_vir_mock_annot$label,
+                            x = 'log2FoldChange',
+                            y = 'pvalue',
+                            title = 'Vir vs Mock',
+                            pCutoff = 0.05,
+                            FCcutoff = 1.0,
+                            pointSize = 4.0,
+                            labSize = 4.0,
+                            labCol = 'black',
+                            labFace = 'bold',
+                            boxedLabels = FALSE,       # start with FALSE to avoid layout issues
+                            colAlpha = 4/5,
+                            legendPosition = 'right',
+                            legendLabSize = 14,
+                            legendIconSize = 4.0,
+                            drawConnectors = TRUE,
+                            widthConnectors = 1.0,
+                            colConnectors = 'black')
+
+print(volcano1)
+
+
+# Step 1: Replace NA descriptions with empty strings
+res_vir_avr_annot$description[is.na(res_vir_avr_annot$description)] <- ""
+
+# Step 2: Create truncated labels (first 25 characters)
+res_vir_avr_annot$short_label <- substr(res_vir_avr_annot$description, 1, 25)
+
+# Step 3: Plot with simplified options first
+volcano2_fixed <- EnhancedVolcano(res_vir_avr_annot,
+                                  lab = res_vir_avr_annot$short_label,
+                                  x = 'log2FoldChange',
+                                  y = 'pvalue',
+                                  title = 'Vir vs avir',
+                                  pCutoff = 0.05,
+                                  FCcutoff = 1.0,
+                                  pointSize = 4.0,
+                                  labSize = 4.0,
+                                  labCol = 'black',
+                                  labFace = 'bold',
+                                  boxedLabels = TRUE,        # disable boxed labels first
+                                  colAlpha = 4/5,
+                                  legendPosition = 'right',
+                                  legendLabSize = 14,
+                                  legendIconSize = 4.0,
+                                  drawConnectors = TRUE,     # disable connectors first
+                                  widthConnectors = 1.0,
+                                  colConnectors = 'black') +
+  ggplot2::scale_y_continuous(breaks = seq(0,7,1))
+
+print(volcano2_fixed)
+
+# Replace NAs in description
+res_avr_mock_annot$description[is.na(res_avr_mock_annot$description)] <- ""
+
+# Create short labels
+res_avr_mock_annot$short_label <- substr(res_avr_mock_annot$description, 1, 25)
+
+# Step 1: Basic plot with simplified labeling options
+volcano3_fixed <- EnhancedVolcano(res_avr_mock_annot,
+                                  lab = res_avr_mock_annot$short_label,
+                                  x = 'log2FoldChange',
+                                  y = 'pvalue',
+                                  title = 'Avr vs Mock',
+                                  pCutoff = 0.05,
+                                  FCcutoff = 1.0,
+                                  pointSize = 4.0,
+                                  labSize = 4.0,
+                                  labCol = 'black',
+                                  labFace = 'bold',
+                                  boxedLabels = TRUE,    # disable boxed labels
+                                  colAlpha = 4/5,
+                                  legendPosition = 'right',
+                                  legendLabSize = 14,
+                                  legendIconSize = 4.0,
+                                  drawConnectors = TRUE,  # disable connectors
+                                  widthConnectors = 1.0,
+                                  colConnectors = 'black') +
+  ggplot2::scale_y_continuous(breaks = seq(0,4,1))
+
+print(volcano3_fixed)
+
+
+
+
+
+
+
 
